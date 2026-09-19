@@ -1,0 +1,18 @@
+package com.cbc.entity;
+
+public enum MessageType {
+    CHAT,
+    JOIN,
+    YJS_AWARENESS,
+    LEFT,
+    EXECUTION_START,
+    EXECUTION_RESULT,
+    YJS_UPDATE,
+    YJS_SYNC_REQUEST,
+    YJS_SYNC_RESPONSE,
+    EXECUTION_OUTPUT,
+    EXECUTION_END,
+    ROOM_STATE_UPDATE,
+    KICKED,
+    MESSAGE_DELETED
+}

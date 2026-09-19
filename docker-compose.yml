@@ -1,0 +1,165 @@
+
+services:
+  java-runner:
+    build:
+      context: ./docker-runner
+      dockerfile: Dockerfile
+    image: java-runner
+    entrypoint: ["echo", "java-runner image built successfully"]
+
+  # Was missing entirely — PythonExecutor.java hardcodes the image name
+  # "python-runner", but nothing built it, so every Python execution failed
+  # with "Unable to find image 'python-runner:latest' locally" on a fresh
+  # `docker compose up --build`. Mirrors the java-runner service above.
+  python-runner:
+    build:
+      context: ./docker-runner-python
+      dockerfile: Dockerfile
+    image: python-runner
+    entrypoint: ["echo", "python-runner image built successfully"]
+
+  # Stands between the backend and the real host Docker socket. Instead of
+  # bind-mounting /var/run/docker.sock straight into the public-facing
+  # backend container (which is functionally root-equivalent access to the
+  # whole host — anything that achieves RCE in the backend previously had a
+  # direct path to full host compromise, independent of the sandboxed user
+  # code entirely), the backend now only reaches a filtered HTTP API that
+  # allows just the Docker operations JavaExecutor/PythonExecutor actually
+  # use (create/start/attach/wait/kill/remove containers, read images) and
+  # blocks everything else outright (no Swarm, no plugins, no nodes, no
+  # exec-into-arbitrary-container, no volume/network administration, no
+  # build/commit/push).
+  #
+  # IMPORTANT — read this before you consider the socket problem "solved":
+  # this proxy filters by Docker API *endpoint category*, not by the
+  # *contents* of a request. It does not inspect whether a container-create
+  # request asks for --privileged, a host bind mount of "/", or
+  # --network=host. A backend that is fully compromised (real, working
+  # remote code execution in the Spring Boot process itself) could still, in
+  # principle, ask Docker to start a privileged/host-mounted container
+  # through this proxy. What this DOES meaningfully close off is every other
+  # category of host-level abuse (Swarm control, arbitrary exec into other
+  # running containers, image registry pushes, volume/network tampering,
+  # engine-wide inspection) — a large reduction in blast radius, not a full
+  # guarantee. The only complete fix is moving code execution to a fully
+  # separate, minimal-attack-surface worker process/host that has no
+  # internet-facing endpoints of its own — treat this proxy as a strong
+  # mitigation you should ship now, not a substitute for that redesign.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: cbc-docker-proxy
+    restart: unless-stopped
+    environment:
+      - CONTAINERS=1   # needed: create/start/kill/remove/attach the exec containers
+      - IMAGES=1       # needed: look up the java-runner/python-runner images
+      - POST=1         # needed: create/start/kill are all POST requests
+      - NETWORKS=0
+      - VOLUMES=0
+      - SERVICES=0
+      - TASKS=0
+      - NODES=0
+      - SWARM=0
+      - PLUGINS=0
+      - SECRETS=0
+      - CONFIGS=0
+      - DISTRIBUTION=0
+      - SESSION=0
+      - BUILD=0
+      - COMMIT=0
+      - EXEC=0         # the app never needs `docker exec` into a running container
+      - AUTH=0
+      - SYSTEM=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-proxy-network
+    # No "ports:" — this must never be reachable from the host or the
+    # internet, only from other containers on docker-proxy-network.
+
+  db:
+    image: mysql:8.0
+    container_name: cbc-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+    # Bound to localhost only: this is for connecting to MySQL from the host
+    # machine during development/debugging. The backend reaches this
+    # container over the internal cbc-network regardless, so it never needs
+    # this to be reachable from outside the host. Remove this entirely in a
+    # real production deployment.
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - cbc-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cbc-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=${DB_HOST}
+      - SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
+      - SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD}
+      # These two were previously never passed to the backend at all, so the
+      # application always fell back to the hardcoded/insecure defaults
+      # baked into application.properties regardless of what you set here.
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+      - EXECUTION_CONTAINER_PATH=${EXECUTION_CONTAINER_PATH}
+      - EXECUTION_HOST_PATH=${EXECUTION_HOST_PATH}
+      # The `docker` CLI installed in the backend image reads DOCKER_HOST
+      # automatically — this points it at the filtered proxy above instead
+      # of a raw socket, with zero code changes needed in
+      # JavaExecutor/PythonExecutor (they already just shell out to `docker`).
+      - DOCKER_HOST=tcp://docker-proxy:2375
+    depends_on:
+      db:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_started
+    volumes:
+      # The raw host socket mount that used to be here is gone — see the
+      # docker-proxy service above for what replaced it and why.
+      - ./temp:/app/temp
+    networks:
+      - cbc-network
+      - docker-proxy-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cbc-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - cbc-network
+
+networks:
+  cbc-network:
+    driver: bridge
+  # Isolated from cbc-network on purpose: only the backend and the Docker
+  # proxy sit on this network, so the frontend and database containers have
+  # no path to the Docker proxy at all, even if one of them were compromised.
+  docker-proxy-network:
+    driver: bridge
+    internal: true
+
+volumes:
+  mysql_data:
