@@ -358,19 +358,9 @@ public class RoomController {
             @PathVariable Long roomId,
             Authentication authentication
     ) {
-        roomService.validateRoomMembership(
-                authentication.getName(),
-                roomId
+        return ResponseEntity.ok(
+                roomService.getRoomMembers(roomId, authentication.getName())
         );
-        Room room = roomRepo.findById(roomId)
-                .orElseThrow(() ->
-                        new RuntimeException("Room not found"));
-        java.util.Set<String> members = new java.util.LinkedHashSet<>();
-        members.add(room.getCreatedBy().getEmail());
-        for (User u : room.getJoinedUsers()) {
-            members.add(u.getEmail());
-        }
-        return ResponseEntity.ok(members);
     }
 
     @PostMapping("/{roomId}/save")

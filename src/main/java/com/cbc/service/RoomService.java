@@ -191,6 +191,30 @@ public class RoomService {
                 room.isReadOnly()
         );
     }
+
+    /*
+     * Was previously inlined in RoomController, calling roomRepo.findById()
+     * directly with no @Transactional boundary around it. That worked only
+     * by accident while spring.jpa.open-in-view=true kept a session open
+     * for the whole request — with OSIV now off, the session closes the
+     * instant findById() returns, and room.getJoinedUsers() (lazy) threw
+     * LazyInitializationException on every single call. Every other
+     * endpoint here already goes through a @Transactional service method
+     * for exactly this reason; this one just hadn't been moved yet.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Set<String> getRoomMembers(Long roomId, String email) {
+        validateRoomMembership(email, roomId);
+        Room room = roomRepo.findById(roomId)
+                .orElseThrow(() -> new RuntimeException("Room not found"));
+
+        java.util.Set<String> members = new java.util.LinkedHashSet<>();
+        members.add(room.getCreatedBy().getEmail());
+        for (User u : room.getJoinedUsers()) {
+            members.add(u.getEmail());
+        }
+        return members;
+    }
     
     // Any moderator (primary host or co-host) may lock/unlock, toggle
     // read-only, and kick regular members.

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { api } from '../context/AuthContext';
 
 export const useCodeExecution = (roomId, historyHandler) => {
@@ -25,7 +25,7 @@ export const useCodeExecution = (roomId, historyHandler) => {
      * EXECUTION_END
      * EXECUTION_RESULT
      */
-    const handleExecutionMessage = (msg) => {
+    const handleExecutionMessage = useCallback((msg) => {
         if (msg.messageType === 'EXECUTION_START') {
             setIsRunning(true);
             setShowTerminal(true);
@@ -82,7 +82,7 @@ export const useCodeExecution = (roomId, historyHandler) => {
                 setExecResult({ exitCode: null, executionTime: null, error: 'Error parsing execution result: ' + msg.content });
             }
         }
-    };
+    }, [historyHandler]);
 
     /*
      * Run JavaScript locally inside a sandboxed iframe.

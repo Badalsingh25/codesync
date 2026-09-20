@@ -683,7 +683,8 @@ const Workspace = () => {
     return () => clearTimeout(t);
   }, [sidebarWidth]);
 
-  // Register all custom themes once Monaco is ready
+  // Register all custom themes once Monaco is ready, and re-apply
+  // whenever the user switches themes.
   useEffect(() => {
     if (!monaco) return;
 
@@ -693,22 +694,21 @@ const Workspace = () => {
       }
     );
 
-    // Apply current theme immediately after registration
-    monaco.editor.setTheme(currentTheme);
-  }, [monaco, currentTheme]);
-
-  // Reactively apply theme whenever user switches it
-  useEffect(() => {
-    if (!monaco) return;
-
     monaco.editor.setTheme(currentTheme);
   }, [monaco, currentTheme]);
 
 const activeFileRef = useRef(activeFile);
-
-useEffect(() => {
-    activeFileRef.current = activeFile;
-}, [activeFile]);
+// Deliberately mutated synchronously during render, not in a useEffect.
+// This ref exists so bindEditor() always sees the truly-current file when
+// Monaco's own onDidChangeModel fires on a tab switch. Monaco's internal
+// effect is a *child* effect and React runs child effects before parent
+// effects within the same commit — so updating this ref from a useEffect
+// here (the parent) meant Monaco's model-change handler could read the
+// *previous* file, silently rebinding live editing to the wrong file's
+// Yjs document. Render-time mutation has no such ordering hazard: render
+// always completes, for the whole tree, before any effect runs.
+// eslint-disable-next-line react-hooks/refs
+activeFileRef.current = activeFile;
 
   const handleEditorDidMount = (editor) => {
     editorRef.current = editor;
